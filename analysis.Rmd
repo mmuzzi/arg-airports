@@ -12,9 +12,12 @@ list_packages <- c("plyr", "dplyr", "ggplot2", "tidyr", "rgdal", "ggmap")
 
 new_packages <- list_packages[!(list_packages %in%
                                   installed.packages()[, "Package"])]
+
 if (length(new_packages) > 0) install.packages(new_packages)
 
 lapply(list_packages, require, character.only=T)
+
+rm("list_packages", "new_packages")
 
 ```
 
@@ -24,9 +27,9 @@ lapply(list_packages, require, character.only=T)
 - Data comes from Argentinian [*Ministerio de Transporte*, *Empresa Argentina de Navegacion Civil*](https://servicios.transporte.gob.ar/gobierno_abierto/seccion.php?t=eana)
 
 
-```{r}
-wd <- "C:\\Users\\mmuzzi\\Desktop\\eana"
-setwd(wd)
+```{r df_eana}
+#wd <- "C:\\Users\\mmuzzi\\Desktop\\eana"
+#jsetwd(wd)
 
 df_eana <- read.csv('eana1401-1802.csv',
                     stringsAsFactors=F, header=T, sep=';')
@@ -44,7 +47,7 @@ df_eana <- df_eana %>% filter(date >= "2017-01-01" & date < "2018-01-01")
 
 - Data from [OurAirports](http://ourairports.com/data/airports.csv) (direct link to .csv file!)
 
-```{r}
+```{r df_airports}
 
 df_airports <- read.csv('airports.csv',
                         stringsAsFactors=F,
@@ -59,49 +62,50 @@ df_airports$local_code[df_airports$local_code == 0 |
 
 # Analysis and manipulation
 
-```{r}
-# dest
+```{r pair_count}
 
 # Commercial flight from non-null carriers
-df_eana <- df_eana %>%
+df_eana2 <- df_eana %>%
   filter (!is.na(carrier) &
-            (flight_class == 'Regular' | flight_class == 'No Regular')) %>%
-  filter(flight_type == 'Cabotaje')
+          (flight_class == 'Regular' | flight_class == 'No Regular')) %>%
+  filter(flight_type == 'Cabotaje') %>%
+  select(-apc_code)
 
 # Converting gps_code airport in EANA dataset to iata_code
 # (not all airports have an IATA code)
-# orig
-df_eana$orig_iata <- df_airports$iata_code[match(df_eana$orig,
-                                                   df_airports$gps_code)]
-# df_eana$orig_local <- df_airports$local_code[match(df_eana$orig,
+# origin
+#df_eana$orig_iata <- df_airports$iata_code[match(df_eana$orig,
+#                                                   df_airports$gps_code)]
+# destination
+#df_eana$dest_iata <- df_airports$iata_code[match(df_eana$dest,
 #                                                   df_airports$gps_code)]
 
-# dest
-df_eana$dest_iata <- df_airports$iata_code[match(df_eana$dest,
-                                                   df_airports$gps_code)]
-# df_eana$dest_local <- df_airports$local_code[match(df_eana$dest,
-#                                                    df_airports$gps_code)]
+df_eana2 <- df_eana2 %>% 
+  left_join(., select(df_airports, iata_code, gps_code),
+            by=c("orig" = "gps_code")) %>%
+  rename(orig_iata = iata_code) %>%
+  left_join(., select(df_airports, iata_code, gps_code),
+            by=c("dest" = "gps_code")) %>%
+  rename(dest_iata = iata_code)
 
 # replacing blanks with NA
 # "^$|^ $" either nothing "" or " "
-df_eana$orig_iata <- sapply(df_eana$orig_iata,
+df_eana2$orig_iata <- sapply(df_eana2$orig_iata,
                             function (x) gsub("^$|^ $", NA, x))
-df_eana$dest_iata <- sapply(df_eana$dest_iata,
+df_eana2$dest_iata <- sapply(df_eana2$dest_iata,
                             function (x) gsub("^$|^ $", NA, x))
 
-df_eana_filter <-  df_eana %>%
+df_eana3 <-  df_eana2 %>%
   filter(!is.na(orig_iata) & !is.na(dest_iata))
 
-head(df_eana_filter)
-
-# we can safely ignore those flights from airports with no IATA code: 0.7%
-# > sum(df_eana_filter$percent[is.na(df_eana_filter$orig_iata) |
-#                              is.na(df_eana_filter$dest_iata)])
-# [1] 0.007217057
+# we can safely ignore those flights from airports with no IATA code: 2%
+# > df_eana2 %>% filter(is.na(orig_iata) | is.na(dest_iata)) %>% summarize(na_count = n()/nrow(df_eana2))
+#     na_count
+# 1 0.02116163
 
 # Get airport pairs
-df_pairs <- df_eana_filter[,c("orig_iata", "dest_iata")]
-df_pairs$pair <- NA
+df_pairs <- df_eana3 %>% select(orig_iata, dest_iata) %>%
+  mutate(pair = NA)
 
 # Paste them alphabetically
 df_pairs$pair <- mapply(function (x, y) {
@@ -111,7 +115,6 @@ df_pairs$pair <- mapply(function (x, y) {
 
 # Get Pareto distribution
 pair_count <- df_pairs %>%
-  select(orig_iata, dest_iata, pair) %>%
   group_by(pair) %>%
   summarize(n=n()) %>%
   arrange(desc(n)) %>%
@@ -124,7 +127,7 @@ pair_count <- df_pairs %>%
 
 # Distance analysis
 
-```{r}
+```{r pair_count2}
 
 haversine <- function (lat_from, lon_from, lat_to, lon_to, r=6371) {
  radians <- pi/180
@@ -139,25 +142,27 @@ haversine <- function (lat_from, lon_from, lat_to, lon_to, r=6371) {
 }
 
 # Airport pairs
-pair_count <- pair_count %>% separate(pair, c("from", "to"), "-", remove=F)
+pair_count2 <- pair_count %>% separate(pair, c("from", "to"), "-", remove=F) %>%
+  # Get coordinates
+  left_join(., select(df_airports, latitude_deg, iata_code),
+            by=c("from" = "iata_code")) %>%
+  rename(lat_from = latitude_deg) %>%
+  left_join(., select(df_airports, longitude_deg, iata_code),
+            by=c("from" = "iata_code")) %>%
+  rename(lon_from = longitude_deg) %>%
+  left_join(., select(df_airports, latitude_deg, iata_code),
+            by=c("to" = "iata_code")) %>%
+  rename(lat_to = latitude_deg) %>%
+  left_join(., select(df_airports, longitude_deg, iata_code),
+            by=c("to" = "iata_code")) %>%
+  rename(lon_to = longitude_deg) %>%
+  # Calculate distance
+  mutate(dist = haversine(lat_from, lon_from, lat_to, lon_to))
+  
 
-# Get coordinates
-pair_count$lat_from <- df_airports$latitude_deg[match(pair_count$from,
-                                                      df_airports$iata_code)]
-pair_count$lon_from <- df_airports$longitude_deg[match(pair_count$from,
-                                                       df_airports$iata_code)]
-
-pair_count$lat_to <- df_airports$latitude_deg[match(pair_count$to,
-                                                    df_airports$iata_code)]
-pair_count$lon_to <- df_airports$longitude_deg[match(pair_count$to,
-                                                     df_airports$iata_code)]
-
-# Calculate distance
-pair_count$dist <- haversine(pair_count$lat_from, pair_count$lon_from,
-                             pair_count$lat_to, pair_count$lon_to)
 
 # Weighted average distance
-dist_weighted <- pair_count %>%
+dist_weighted <- pair_count2 %>%
   summarize(sum(percent*dist))
 
 dist_weighted
@@ -168,11 +173,12 @@ write.csv(pair_count, file='pair_count.csv')
 
 # Further analysis
 
-```{r}
-airports <- pair_count %>%
-  select(from, n) %>%
-  group_by(from) %>%
+```{r provinces}
+airports <- pair_count2 %>%
+  select(from, n, lat_from, lon_from) %>%
+  group_by(from, lat_from, lon_from) %>%
   summarize(n_group=sum(n)) %>%
+  ungroup() %>%
   mutate(percent=n_group/sum(n_group)) %>%
   arrange(desc(n_group))
 
@@ -180,18 +186,13 @@ df_provinces <- read.csv('provinces.csv', stringsAsFactors=F,
                          sep=',', header=T, encoding='UTF-8')
 colnames(df_provinces) <- c("code", "name", "type", "province")
 
-airports$iso_region <- df_airports$iso_region[match(airports$from,
-                                                  df_airports$iata_code)]
+airports2 <- airports %>%
+  left_join(., select(df_airports, iso_region, iata_code),
+            by=c("from" = "iata_code")) %>%
+  left_join(., select(df_provinces, province, code),
+            by=c("iso_region" = "code"))
 
-airports$province <- df_provinces$province[match(airports$iso_region,
-                                                  df_provinces$code)]
-
-airports$long <- df_airports$longitude_deg[match(airports$from,
-                                                 df_airports$iata_code)]
-airports$lat <- df_airports$latitude_deg[match(airports$from,
-                                               df_airports$iata_code)]
-
-airports %>% group_by(province) %>%
+provinces <- airports2 %>% group_by(province) %>%
   summarize(n_province=sum(n_group)) %>%
   mutate(percent_province=n_province/sum(n_province),
          cumsum_province=cumsum(n_province)/sum(n_province)) %>%
@@ -205,8 +206,8 @@ airports %>% group_by(province) %>%
 ```{r}
 
 # Pareto
-pair_count_plot <- pair_count %>% top_n(20, n)
-pair_count_plot$pair <- factor(pair_count_plot$pair, levels=rev(pair_count_plot$pair))
+pair_count_plot <- pair_count %>% top_n(20, n)%>%
+  mutate(pair = factor(pair, levels=rev(pair)))
 N <- sum(pair_count_plot$n)
 
 theme_custom <- theme(plot.title=element_text(hjust=0,
@@ -221,7 +222,7 @@ theme_custom <- theme(plot.title=element_text(hjust=0,
   axis.ticks.y=element_blank())
 
 pareto <- ggplot(pair_count_plot) +
-  geom_bar(aes(x=pair, y=n), width=1, stat='identity', colors='#44546a') +
+  geom_bar(aes(x=pair, y=n), width=1, stat='identity', color='#44546a') +
   geom_line(aes(x=pair, y=cumsum*N, group=1)) +
   scale_x_discrete(breaks=pair_count$pair) +
   scale_y_continuous(labels=scales::comma,
