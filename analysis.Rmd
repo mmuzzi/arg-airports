@@ -28,8 +28,6 @@ rm("list_packages", "new_packages")
 
 
 ```{r df_eana}
-#wd <- "C:\\Users\\mmuzzi\\Desktop\\eana"
-#jsetwd(wd)
 
 df_eana <- read.csv('eana1401-1802.csv',
                     stringsAsFactors=F, header=T, sep=';')
